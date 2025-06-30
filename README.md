@@ -29,7 +29,7 @@ Before running any recon scans, use this script to create a new testing environm
 ### Example usage:
 
 ```
-./create\_env.sh
+./createEnv.sh
 ```
 
 ---
