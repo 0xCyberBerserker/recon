@@ -1,5 +1,3 @@
-```
-
 # LAN Enumeration and Reconnaissance Tool
 
 This project provides a structured workflow for organizing penetration testing environments and automating local network reconnaissance. It consists of two primary components:
@@ -93,9 +91,8 @@ Provided as-is without warranty. Use responsibly and comply with applicable laws
 
 ## Author
 
-Developed and maintained by aesir.
+Developed and maintained by 0xCyberBerserker
 
 ---
 
 Contributions and feedback are welcome.
-```
