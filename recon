@@ -1,0 +1,182 @@
+#!/usr/bin/env bash
+
+#set -euo pipefail
+set -uo pipefail
+
+# Bright colors and separators
+CYAN="\033[1;36m"         # Bright cyan for headers
+MAGENTA="\033[1;35m"      # Magenta for port/status
+YELLOW="\033[1;33m"       # Bright yellow
+RED="\033[1;31m"          # Red for shellcodes
+BRIGHT_WHITE="\033[1;37m" # Bright white for separators
+RESET=$'\033[0m'          # Reset color
+
+REAL_USER="aesir"
+USER_HOME="/home/$REAL_USER"
+ENV_DIR="$USER_HOME/environments"
+
+# Validate script is run with sudo
+if [ "$EUID" -ne 0 ]; then
+  echo -e "${CYAN}Please run this script with sudo.${RESET}"
+  exit 1
+fi
+
+mkdir_chown() {
+    mkdir -p "$1"
+    chown -R "$REAL_USER":"$REAL_USER" "$1"
+}
+
+mkdir_chown "$ENV_DIR"
+
+# Environment selection using percol run as the real user
+selected_env=$(find "$ENV_DIR" -mindepth 1 -maxdepth 1 -type d | sed "s#$ENV_DIR/##" | sort | (cat && echo "EXIT") | sudo -u "$REAL_USER" percol --prompt "Select Environment: ")
+[[ "$selected_env" == "EXIT" || -z "$selected_env" ]] && echo -e "${CYAN}[-] Aborted.${RESET}" && exit 0
+echo -e "${YELLOW}[#!] Environment: $selected_env ${RESET}"
+RECON_DIR="$ENV_DIR/$selected_env/lan-enum"
+mkdir_chown "$RECON_DIR"
+
+echo -e "${CYAN}[*] Detecting current subnet:${RESET}"
+current_subnet=$(ip -4 addr show scope global | grep inet | grep -v 127.0.0.1 | awk '{print $2}' | head -n 1)
+
+if [[ -z "$current_subnet" ]]; then
+    echo -e "${CYAN}[-] Could not detect current subnet. Exiting.${RESET}"
+    exit 1
+fi
+
+echo -e "${CYAN}[*] Current subnet to scan:${RESET} $current_subnet"
+
+filtered_subnets=("$current_subnet")
+
+timestamp=$(date +%F_%H-%M-%S)
+ping_results="$RECON_DIR/ping_sweep_$timestamp.txt"
+
+echo -e "${CYAN}[*] Starting ping sweep (fast host discovery)...${RESET}"
+for subnet in "${filtered_subnets[@]}"; do
+    echo -e "${CYAN}[*] Ping sweep on $subnet ...${RESET}"
+    nmap -sn --host-timeout 1s --max-retries 2 "$subnet" -oG - | awk '/Up$/{print $2}' >> "$ping_results"
+done
+chown "$REAL_USER":"$REAL_USER" "$ping_results"
+
+mapfile -t live_hosts < <(sort -u "$ping_results")
+
+if [[ ${#live_hosts[@]} -eq 0 ]]; then
+    echo -e "${CYAN}[-] No live hosts found. Exiting.${RESET}"
+    exit 1
+fi
+
+echo -e "${CYAN}[*] Found ${#live_hosts[@]} live hosts.${RESET}"
+
+summary_md="$RECON_DIR/lan-summary_$timestamp.md"
+echo "# LAN Recon Summary" > "$summary_md"
+echo "" >> "$summary_md"
+chown "$REAL_USER":"$REAL_USER" "$summary_md"
+
+get_vulners_description() {
+    local url=$1
+    # Only attempt description extraction for CVE URLs on vulners.com
+    if [[ "$url" =~ vulners.com/cve/ ]]; then
+        desc=$(curl -s "$url" | xmllint --html --xpath 'string(//*[@id="body"]/div/div[2]/div[2]/div/div/div/div[1]/div[1]/div[2]/p)' - 2>/dev/null || echo "")
+        [[ -z "$desc" ]] && desc="No description found"
+        # Trim leading and trailing whitespace
+        desc=$(echo "$desc" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+        echo "$desc"
+    else
+        echo ""
+    fi
+}
+
+# New function to prepare search terms for searchsploit
+prepare_search_term() {
+    local service_line="$1"
+    # Remove leading port/protocol and "open" keyword (case insensitive)
+    local term=$(echo "$service_line" | sed -r 's/^\d+\/tcp\s+open\s+//I')
+    # Remove any parentheses content like "(protocol 2.0)"
+    term=$(echo "$term" | sed -r 's/\s*\([^)]*\)//g')
+    # Normalize multiple spaces to single space and trim
+    term=$(echo "$term" | sed 's/  */ /g' | sed 's/^ *//;s/ *$//')
+    echo "$term"
+}
+
+scan_host() {
+    local ip=$1
+    local nmap_output="${RECON_DIR}/${ip}_$timestamp.nmap"
+    local hostname=""
+    local services_versions=""
+
+    echo -e "${CYAN}[*] Scanning $ip ...${RESET}"
+    #nmap -sV --script vulners --max-retries 2 --host-timeout 1s -oN "$nmap_output" "$ip" > /dev/null 2>&1
+    nmap -sV -Pn --script vulners --max-retries 5 --host-timeout 10s -oN "$nmap_output" "$ip"
+
+
+    hostname=$(grep -Po '(?<=Nmap scan report for ).*' "$nmap_output" | head -1 | grep -Po '^\S+')
+
+    # Extract the service and version column, for example "ssh OpenSSH 10.0p2 Debian 5"
+    services_versions=$(grep -P '^\d+/tcp' "$nmap_output" | awk '{$1=$1;print}' | sed -r 's/^\d+\/tcp\s+\S+\s+\S+\s+(.+)/\1/')
+    if [[ -z "$services_versions" ]]; then
+        echo -e "${YELLOW}[!] No open services detected on $ip or scan timed out.${RESET}"
+    fi
+
+
+    echo -e "\n${BRIGHT_WHITE}----------------------------------------${RESET}" | tee -a "$summary_md"
+    echo -e "## Host: $ip ${hostname:+($hostname)}\n" | tee -a "$summary_md"
+
+    echo -e "${YELLOW}Exploits found by Nmap vulners script:${RESET}"
+    exploits_vulners=$(grep -Po 'https?://[^\s*]+' "$nmap_output" | sort -u)
+    filtered_vulners=$(echo "$exploits_vulners" | grep -v 'nmap.org/submit' || true)
+
+    if [[ -z "$filtered_vulners" ]]; then
+        echo -e "  - None"
+        echo "[X] Exploits (vulners): None" >> "$summary_md"
+    else
+        echo "[X] Exploits Nmap:" >> "$summary_md"
+        while IFS= read -r url; do
+            id=$(basename "$url")
+            printf "%b [~] %s%b - %s\n" "$RED" "$id" "$RESET" "$url" | tee -a "$summary_md"
+        done <<< "$filtered_vulners"
+    fi
+
+    echo -e "\n${BRIGHT_WHITE}----------------------------------------${RESET}" | tee -a "$summary_md"
+    echo -e "\n${YELLOW}Exploits found by searchsploit:${RESET}"
+    exploits_searchsploit=""
+
+    if [[ -n "$services_versions" ]]; then
+        while IFS= read -r service; do
+            clean_service=$(prepare_search_term "$service")
+            [[ -z "$clean_service" || ${#clean_service} -lt 3 ]] && continue
+
+            # Try precise search first
+            result=$(searchsploit --color=never --quiet -- -t "$clean_service" 2>/dev/null || true)
+
+            # If no results, try with just the first word (more generic)
+            if [[ -z "$result" ]]; then
+                first_word=$(echo "$clean_service" | awk '{print $1}')
+                if [[ -n "$first_word" && ${#first_word} -ge 3 ]]; then
+                    result=$(searchsploit --color=never --quiet -- -t "$first_word" 2>/dev/null || true)
+                fi
+            fi
+
+            if [[ -n "$result" ]]; then
+                exploits_searchsploit+="$result"$'\n'
+            fi
+        done <<< "$services_versions"
+    fi
+
+    if [[ -z "$exploits_searchsploit" ]]; then
+        echo -e "  - None"
+        echo "[X] Exploits (searchsploit): None" >> "$summary_md"
+    else
+        echo "$exploits_searchsploit" | tee -a "$summary_md"
+    fi
+
+    echo -e "${BRIGHT_WHITE}----------------------------------------${RESET}" | tee -a "$summary_md"
+
+    chown "$REAL_USER":"$REAL_USER" "$nmap_output"
+}
+
+for ip in "${live_hosts[@]}"; do
+    scan_host "$ip"
+done
+
+chown -R "$REAL_USER":"$REAL_USER" "$RECON_DIR"
+
+echo -e "\n${CYAN}✅ Scan and analysis complete. Summary saved at: $summary_md${RESET}\n"
