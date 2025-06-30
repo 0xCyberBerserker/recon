@@ -1,0 +1,20 @@
+#!/bin/bash
+
+# ─── ASK FOR NAME OF THE ENV ────────────────────────────────
+read -p "🔧 New Env name?: " NAME
+
+# ─── RUTA BASE DEL ENTORNO ───────────────────────────────────
+BASE="$HOME/environments/$NAME"
+
+# ─── CREATE FOLDER STRUCTURE UNDER THE ENV NAME ────────────────────────────────────────
+mkdir -p "$BASE"/{recon,lan-enum,wifi-attacks,web-testing,exploits,postex,loot,notes,tools,logs}
+
+# ─── README ────────────────────────────────
+echo "# Pentest: $NAME" > "$BASE/notes/README.md"
+touch "$BASE/notes/notes.md"
+touch "$BASE/logs/register.txt"
+
+# ─── MENSAJE FINAL ───────────────────────────────────────────
+echo -e "\n🛠️  Created Env: $BASE"
+tree "$BASE"
+
