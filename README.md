@@ -1,5 +1,3 @@
-Aquí tienes el README.md en un textbox, usando ``` como delimitadores, para que puedas copiarlo sin problemas:
-
 ```
 
 # LAN Enumeration and Reconnaissance Tool
