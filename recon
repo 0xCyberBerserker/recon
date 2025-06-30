@@ -11,7 +11,7 @@ RED="\033[1;31m"          # Red for shellcodes
 BRIGHT_WHITE="\033[1;37m" # Bright white for separators
 RESET=$'\033[0m'          # Reset color
 
-REAL_USER="aesir"
+REAL_USER="kali" ## USE YOUR REAL LINUX USERNAME, in my case kali.
 USER_HOME="/home/$REAL_USER"
 ENV_DIR="$USER_HOME/environments"
 
